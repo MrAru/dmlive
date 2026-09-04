@@ -3,11 +3,11 @@ pub mod config;
 use crate::utils::is_android;
 use clap::Parser;
 use config::{BVideoInfo, BVideoType, Config};
+use log::warn;
 use reqwest::Url;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::Path;
-use tokio::{fs::OpenOptions, io::AsyncWriteExt};
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -203,7 +203,68 @@ impl ConfigManager {
         if is_android().await {
             self.plat = Platform::Android;
         }
+        if self.plat != Platform::Android
+            && matches!(self.site, Site::BiliLive | Site::BiliVideo)
+            && !self.cookies_from_browser.is_empty()
+        {
+            self.refresh_bili_cookie_from_browser().await;
+        }
         Ok(())
+    }
+
+    async fn refresh_bili_cookie_from_browser(&mut self) {
+        if let Ok(configured_cookie) = crate::utils::cookies::minimal_bili_cookie(&self.bcookie) {
+            match crate::utils::cookies::validate_bili_cookie(&configured_cookie).await {
+                Ok(true) => {
+                    if configured_cookie != self.bcookie {
+                        self.bcookie = configured_cookie;
+                        if let Err(error) = self.write_config().await {
+                            warn!("the minimal configured cookie is valid but could not be saved: {error}");
+                        }
+                    }
+                    return;
+                }
+                Ok(false) => warn!("configured video-site cookie is no longer logged in; trying the browser profile"),
+                Err(error) => {
+                    warn!("could not validate the configured video-site cookie; trying the browser profile: {error}");
+                }
+            }
+        }
+
+        let browser_cookie =
+            match crate::utils::cookies::get_cookies_from_browser(&self.cookies_from_browser, ".bilibili.com").await {
+                Ok(cookie) => cookie,
+                Err(error) => {
+                    warn!(
+                        "could not read cookies from {}: {error}",
+                        self.cookies_from_browser
+                    );
+                    return;
+                }
+            };
+        let candidate = match crate::utils::cookies::minimal_bili_cookie(&browser_cookie) {
+            Ok(cookie) => cookie,
+            Err(error) => {
+                warn!("cookies from {} do not contain the required login fields: {error}", self.cookies_from_browser);
+                return;
+            }
+        };
+        match crate::utils::cookies::validate_bili_cookie(&candidate).await {
+            Ok(true) => {
+                self.bcookie = candidate;
+                if let Err(error) = self.write_config().await {
+                    warn!("browser cookies are valid but could not be saved to config: {error}");
+                }
+            }
+            Ok(false) => warn!(
+                "cookies from {} are not logged in",
+                self.cookies_from_browser
+            ),
+            Err(error) => warn!(
+                "could not validate cookies from {}: {error}",
+                self.cookies_from_browser
+            ),
+        }
     }
 
     pub fn set_stream_type(&self, stream_info: &HashMap<&str, String>) {
@@ -224,32 +285,34 @@ impl ConfigManager {
     }
 
     pub async fn write_config(&self) -> anyhow::Result<()> {
-        if !self.on_writing.get() {
-            self.on_writing.set(true);
-            // tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+        if self.on_writing.replace(true) {
+            return Ok(());
+        }
+        let result = async {
             let proj_dirs = directories::ProjectDirs::from("com", "THMonster", "dmlive").unwrap();
             let d = proj_dirs.config_dir();
-            let _ = tokio::fs::create_dir_all(&d).await;
+            tokio::fs::create_dir_all(&d).await?;
             let config_path = d.join("config.toml");
-            if !config_path.exists() {
-                let _ = tokio::fs::File::create(&config_path).await;
+            let temporary_path = d.join("config.toml.tmp");
+            let contents = toml::to_string_pretty(&Config {
+                bcookie: Some(self.bcookie.clone()),
+                cookies_from_browser: Some(self.cookies_from_browser.clone()),
+                danmaku_speed: Some(self.danmaku_speed.get()),
+                font_alpha: Some(self.font_alpha.get()),
+                font_scale: Some(self.font_scale.get()),
+            })
+            .unwrap();
+            tokio::fs::write(&temporary_path, contents).await?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                tokio::fs::set_permissions(&temporary_path, std::fs::Permissions::from_mode(0o600)).await?;
             }
-            let mut f = OpenOptions::new().write(true).truncate(true).open(config_path).await?;
-            f.write_all(
-                toml::to_string_pretty(&Config {
-                    bcookie: Some(self.bcookie.clone()),
-                    cookies_from_browser: Some(self.cookies_from_browser.clone()),
-                    danmaku_speed: Some(self.danmaku_speed.get()),
-                    font_alpha: Some(self.font_alpha.get()),
-                    font_scale: Some(self.font_scale.get()),
-                })
-                .unwrap()
-                .as_bytes(),
-            )
-            .await?;
-            f.sync_all().await?;
-            self.on_writing.set(false);
+            tokio::fs::rename(temporary_path, config_path).await?;
+            anyhow::Ok(())
         }
-        Ok(())
+        .await;
+        self.on_writing.set(false);
+        result
     }
 }

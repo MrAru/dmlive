@@ -1,6 +1,5 @@
 use crate::dmlerr;
 use crate::dmlive::DMLContext;
-use crate::utils::cookies::get_cookies_from_browser;
 use anyhow::Result;
 use log::info;
 use regex::Regex;
@@ -109,11 +108,7 @@ impl Bilibili {
         param1.push(("dolby", "5"));
         param1.push(("panorama", "1"));
 
-        let cookie = if self.ctx.cm.cookies_from_browser.is_empty() {
-            self.ctx.cm.bcookie.clone()
-        } else {
-            get_cookies_from_browser(&self.ctx.cm.cookies_from_browser, ".bilibili.com").await?
-        };
+        let cookie = self.ctx.cm.bcookie.clone();
         let resp = client
             .get(BILI_API1)
             .header("Referer", room_url)
@@ -270,11 +265,7 @@ impl Bilibili {
             anyhow::Ok(())
         };
 
-        let cookies = if self.ctx.cm.cookies_from_browser.is_empty() {
-            self.ctx.cm.bcookie.clone()
-        } else {
-            get_cookies_from_browser(&self.ctx.cm.cookies_from_browser, ".bilibili.com").await?
-        };
+        let cookies = self.ctx.cm.bcookie.clone();
         let mut ret = HashMap::new();
         ret.insert("url", "".to_string());
         let client = reqwest::Client::builder()

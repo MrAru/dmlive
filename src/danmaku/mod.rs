@@ -545,19 +545,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         info!("ratio: {}", &ratio_scale);
         self.reset();
         self.ratio_scale.set(ratio_scale);
-        let cookies = if self.ctx.cm.cookies_from_browser.is_empty() {
-            self.ctx.cm.bcookie.clone()
-        } else {
-            match crate::utils::cookies::get_cookies_from_browser(&self.ctx.cm.cookies_from_browser, ".bilibili.com")
-                .await
-            {
-                Ok(cookies) => cookies,
-                Err(error) => {
-                    log::warn!("failed to read browser cookies for video subtitles: {error}");
-                    self.ctx.cm.bcookie.clone()
-                }
-            }
-        };
+        let cookies = self.ctx.cm.bcookie.clone();
         let danmaku_url = format!("https://api.bilibili.com/x/v1/dm/list.so?oid={cid}");
         let bilivideo = bilivideo::Bilibili::new();
         let danmaku_request = bilivideo.fetch(&danmaku_url);
